@@ -1,15 +1,26 @@
+"""
+Compare large matrix-multiply throughput on CPU vs Apple MPS (Metal GPU).
+
+Warmup runs prime caches and amortize one-time Metal setup before timed runs.
+MPS kernels run asynchronously; torch.mps.synchronize() fences the GPU so timings
+reflect real work completion, not just kernel enqueue time.
+"""
 import statistics
 import time
 
 import torch
 
+# Matrix shape (SIZE x SIZE). Larger → more meaningful GPU wins but slower runs.
 SIZE = 5000
 DTYPE = torch.float32
+
+# Discard first batches so JIT/caches/OS scheduling don’t skew the median.
 WARMUP_ROUNDS = 5
 TIMED_ROUNDS = 20
 
 
 def bench_cpu_mm(a: torch.Tensor, b: torch.Tensor, rounds: int) -> list[float]:
+    """Time `a @ b` on CPU. CPU matmul completes before perf_counter resumes."""
     times: list[float] = []
     for _ in range(rounds):
         t0 = time.perf_counter()
@@ -19,6 +30,7 @@ def bench_cpu_mm(a: torch.Tensor, b: torch.Tensor, rounds: int) -> list[float]:
 
 
 def bench_mps_mm(a: torch.Tensor, b: torch.Tensor, rounds: int) -> list[float]:
+    """Time `a @ b` on MPS. Sync before start = idle GPU; sync after end = kernels finished."""
     times: list[float] = []
     for _ in range(rounds):
         torch.mps.synchronize()
@@ -29,7 +41,8 @@ def bench_mps_mm(a: torch.Tensor, b: torch.Tensor, rounds: int) -> list[float]:
     return times
 
 
-print(f"CUDA available: {torch.cuda.is_available()}") ## for nvidia gpu
+# CUDA = NVIDIA; MPS = Apple Silicon GPU via Metal.
+print(f"CUDA available: {torch.cuda.is_available()}")
 print(f"MPS available: {torch.backends.mps.is_available()}")
 if torch.cuda.is_available():
     print(f"GPU: {torch.cuda.get_device_name(0)}")
@@ -46,6 +59,7 @@ print(
 )
 
 if torch.backends.mps.is_available():
+    # .to("mps") copies weights to unified memory accessible by the GPU.
     a_gpu = a_cpu.to("mps")
     b_gpu = b_cpu.to("mps")
 
@@ -62,7 +76,7 @@ if torch.backends.mps.is_available():
     else:
         print(f"MPS slower than CPU by {1 / ratio_cpu_over_mps:.2f}x (median)")
 
-## result
+# Example output (hardware-dependent):
 # CPU (20 timed runs after 5 warm-ups, median): 0.1880s
 # MPS (20 timed runs after 5 warm-ups, median): 0.0915s
 # MPS faster than CPU by 2.06x (median)
